@@ -376,14 +376,43 @@ class DiskReader:
         if self._mmap is not None:
             # mmap: zero-copy slice (fastest path)
             return bytes(self._mmap[offset : offset + size])
-        else:
-            # Standard seek + read
-            self._file.seek(offset, 0)
-            data = self._file.read(size)
-            if len(data) < size:
-                # Short read: pad with zeros (common at end of device)
-                data = data + b"\x00" * (size - len(data))
-            return data
+            
+        # On Windows, reading raw devices requires strict sector alignment
+        if self._is_device and os.name == "nt":
+            return self._read_bytes_aligned(offset, size)
+
+        # Standard seek + read (for regular files or Linux/macOS buffered block devices)
+        self._file.seek(offset, 0)
+        data = self._file.read(size)
+        if len(data) < size:
+            # Short read: pad with zeros (common at end of device)
+            data = data + b"\x00" * (size - len(data))
+        return data
+
+    def _read_bytes_aligned(self, offset: int, size: int) -> bytes:
+        """Handle strict sector alignment required by Windows raw devices.
+        
+        Windows requires `seek()` and `read()` to be aligned to sector boundaries
+        when reading from `\\\\.\\PhysicalDriveX` or `\\\\.\\E:`. This method aligns
+        the offset down to the nearest sector, reads enough full sectors to cover
+        the requested data, and slices out the exact requested bytes.
+        """
+        sector_size = self._sector_size
+        aligned_offset = (offset // sector_size) * sector_size
+        align_diff = offset - aligned_offset
+        
+        # Calculate how many full sectors we need to read
+        aligned_size = ((align_diff + size + sector_size - 1) // sector_size) * sector_size
+        
+        self._file.seek(aligned_offset, 0)
+        data = self._file.read(aligned_size)
+        
+        # Slice out the exact bytes requested
+        result = data[align_diff : align_diff + size]
+        
+        if len(result) < size:
+            result = result + b"\x00" * (size - len(result))
+        return result
 
     def get_disk_size(self) -> int:
         """Return total source size in bytes.
