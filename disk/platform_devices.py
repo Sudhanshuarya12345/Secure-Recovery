@@ -33,11 +33,13 @@ logger = get_logger(__name__)
 class DeviceInfo:
     """Normalized information about a physical storage device."""
 
-    path: str               # /dev/sda, \\.\PhysicalDrive0
+    path: str               # /dev/sda, \\.\PhysicalDrive0, or E:
     size_bytes: int = 0     # Total device size
     model: str = "Unknown"  # Device model name
     removable: bool = False # USB/SD card = True
     partitions: list[str] = field(default_factory=list)  # ["/dev/sda1", ...]
+    fs_type: str = ""       # Filesystem type (FAT32, NTFS, etc.)
+    label: str = ""         # Volume label
 
     @property
     def size_display(self) -> str:
@@ -261,7 +263,139 @@ def _list_macos_devices() -> list[DeviceInfo]:
 # ── Windows implementation ──────────────────────────────────────────────
 
 def _list_windows_devices() -> list[DeviceInfo]:
-    """Enumerate devices on Windows by probing PhysicalDrive paths.
+    """Enumerate devices on Windows using logical drives AND physical drives.
+
+    Strategy (no admin required for logical drives):
+    1. Use kernel32.GetLogicalDrives() to find all drive letters (C:, D:, E:, ...)
+    2. Use GetDriveTypeW() to identify removable/fixed/network/cdrom
+    3. Use GetVolumeInformationW() for filesystem type and volume label
+    4. Use GetDiskFreeSpaceExW() for size information
+
+    If running as Admin, also probe PhysicalDrive paths for raw disk access.
+    """
+    devices: list[DeviceInfo] = []
+
+    # ── Phase 1: Logical drives (always works, no admin needed) ─────
+    try:
+        devices.extend(_list_windows_logical_drives())
+    except Exception as e:
+        logger.warning("Logical drive enumeration failed: %s", e)
+
+    # ── Phase 2: Physical drives (needs admin, best-effort) ─────────
+    try:
+        phys = _list_windows_physical_drives()
+        devices.extend(phys)
+    except Exception as e:
+        logger.debug("Physical drive enumeration skipped (no admin): %s", e)
+
+    logger.info("Windows device scan: found %d device(s)", len(devices))
+    return devices
+
+
+def _list_windows_logical_drives() -> list[DeviceInfo]:
+    """Enumerate logical drives using kernel32 APIs (no admin required).
+
+    Uses:
+    - GetLogicalDrives() → bitmask of available drive letters
+    - GetDriveTypeW() → drive type (removable, fixed, network, cdrom)
+    - GetVolumeInformationW() → filesystem name, volume label
+    - GetDiskFreeSpaceExW() → free/total bytes
+    """
+    import ctypes
+    import ctypes.wintypes
+    import shutil
+
+    kernel32 = ctypes.windll.kernel32
+    devices: list[DeviceInfo] = []
+
+    # Drive type constants
+    DRIVE_REMOVABLE = 2
+    DRIVE_FIXED = 3
+    DRIVE_REMOTE = 4
+    DRIVE_CDROM = 5
+
+    bitmask = kernel32.GetLogicalDrives()
+    if bitmask == 0:
+        return devices
+
+    for i in range(26):
+        if not (bitmask & (1 << i)):
+            continue
+
+        letter = chr(ord("A") + i)
+        root = f"{letter}:\\"
+        drive_path = f"{letter}:"
+
+        # Get drive type
+        drive_type = kernel32.GetDriveTypeW(root)
+
+        # Skip network and unknown drives
+        if drive_type not in (DRIVE_REMOVABLE, DRIVE_FIXED, DRIVE_CDROM):
+            continue
+
+        # Determine type label
+        if drive_type == DRIVE_REMOVABLE:
+            type_label = "USB/Removable"
+            is_removable = True
+        elif drive_type == DRIVE_CDROM:
+            type_label = "CD/DVD"
+            is_removable = True
+        else:
+            type_label = "Fixed Disk"
+            is_removable = False
+
+        # Get volume information (filesystem type, label)
+        fs_type = ""
+        vol_label = ""
+        try:
+            vol_name_buf = ctypes.create_unicode_buffer(261)
+            fs_name_buf = ctypes.create_unicode_buffer(261)
+            serial = ctypes.wintypes.DWORD(0)
+            max_len = ctypes.wintypes.DWORD(0)
+            flags = ctypes.wintypes.DWORD(0)
+
+            success = kernel32.GetVolumeInformationW(
+                root,
+                vol_name_buf, 261,
+                ctypes.byref(serial),
+                ctypes.byref(max_len),
+                ctypes.byref(flags),
+                fs_name_buf, 261,
+            )
+            if success:
+                fs_type = fs_name_buf.value  # "NTFS", "FAT32", "exFAT", etc.
+                vol_label = vol_name_buf.value
+        except Exception:
+            pass
+
+        # Get size information
+        size_bytes = 0
+        try:
+            usage = shutil.disk_usage(root)
+            size_bytes = usage.total
+        except Exception:
+            pass
+
+        # Build display name
+        model = vol_label if vol_label else type_label
+        if vol_label:
+            model = f"{vol_label} ({type_label})"
+
+        devices.append(DeviceInfo(
+            path=f"\\\\.\\{letter}:",
+            size_bytes=size_bytes,
+            model=model,
+            removable=is_removable,
+            partitions=[],
+            fs_type=fs_type,
+            label=vol_label,
+        ))
+
+    return devices
+
+
+def _list_windows_physical_drives() -> list[DeviceInfo]:
+    """Enumerate physical drives (requires admin for raw access).
 
     Tries opening \\\\.\\PhysicalDrive0 through \\\\.\\PhysicalDrive15.
     Uses WMI (via ``wmic``) for model and removable info when available.
@@ -290,10 +424,9 @@ def _list_windows_devices() -> list[DeviceInfo]:
             size_bytes=size_bytes,
             model=model,
             removable=removable,
-            partitions=[],  # Windows partition enumeration is complex; skip for now
+            partitions=[],
         ))
 
-    logger.info("Windows device scan: found %d device(s)", len(devices))
     return devices
 
 
@@ -332,3 +465,4 @@ def _get_wmi_disk_info() -> dict[int, dict]:
             continue
 
     return info
+

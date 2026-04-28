@@ -74,10 +74,11 @@ class PartitionScanner:
         """Scan the disk for partitions and identify filesystems.
 
         Strategy:
-        1. Read LBA 0 and parse as MBR
-        2. If MBR contains protective entry (0xEE) → parse GPT at LBA 1
-        3. For each partition → probe for filesystem superblock
-        4. Find unallocated gaps between partitions
+        1. Check if LBA 0 is actually a raw filesystem (e.g. logical drive like E:)
+        2. Read LBA 0 and parse as MBR
+        3. If MBR contains protective entry (0xEE) → parse GPT at LBA 1
+        4. For each partition → probe for filesystem superblock
+        5. Find unallocated gaps between partitions
 
         Args:
             reader: DiskReader for the source.
@@ -88,7 +89,31 @@ class PartitionScanner:
         total_sectors = reader.get_sector_count()
         disk_size = reader.get_disk_size()
 
-        # Step 1: Parse MBR at LBA 0
+        # Step 1: Check if LBA 0 is already a formatted filesystem (logical volume)
+        from filesystem.manager import detect_filesystem_from_reader
+        fs_info = detect_filesystem_from_reader(reader, 0)
+
+        if fs_info.fs_type != "unknown":
+            logger.info("Detected raw filesystem %s at LBA 0. Skipping partition scan.", fs_info.fs_type)
+            return ScanResult(
+                scheme="volume",
+                partitions=[
+                    DetectedPartition(
+                        index=0,
+                        scheme="volume",
+                        lba_start=0,
+                        lba_end=max(0, total_sectors - 1),
+                        size_bytes=disk_size,
+                        type_name=fs_info.fs_type.upper(),
+                        fs_type=fs_info.fs_type,
+                        label=fs_info.label,
+                    )
+                ],
+                unallocated=[],
+                disk_size=disk_size,
+            )
+
+        # Step 2: Parse MBR at LBA 0
         mbr_data = reader.read_sector(0)
         mbr_result = self._mbr_parser.parse(mbr_data)
 
