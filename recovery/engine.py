@@ -33,6 +33,10 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+class RecoveryAborted(Exception):
+    """Raised when the user completely aborts the recovery operation."""
+    pass
+
 
 # ── Configuration ───────────────────────────────────────────────────────
 
@@ -155,6 +159,7 @@ class RecoveryEngine:
         self._cb = callbacks
 
         self._stop_event = threading.Event()
+        self._abort_event = threading.Event()
         self._pause_event = threading.Event()
 
         # Speed tracking
@@ -168,6 +173,12 @@ class RecoveryEngine:
         """Signal the engine to stop gracefully (thread-safe)."""
         self._stop_event.set()
         self._pause_event.set()  # Unpause if paused so it can exit
+
+    def abort(self) -> None:
+        """Signal the engine to abort completely (thread-safe)."""
+        self._abort_event.set()
+        self._stop_event.set()
+        self._pause_event.set()
 
     def pause(self) -> None:
         """Pause the engine (thread-safe)."""
@@ -222,12 +233,8 @@ class RecoveryEngine:
                     f"[{scan_result.scheme.upper()}]"
                 )
 
-                if self._stop_event.is_set():
-                    self._cb.on_log("WARN", "Recovery stopped by user.")
-                    return
-
                 # Phase 2: Filesystem recovery
-                if self._config.strategy in ("filesystem", "both"):
+                if not self._stop_event.is_set() and self._config.strategy in ("filesystem", "both"):
                     self._cb.on_log("INFO", "Starting filesystem-aware recovery...")
                     fs_files = self._recover_from_filesystems(
                         reader, scan_result, session_dir, stats
@@ -238,30 +245,28 @@ class RecoveryEngine:
                         stats.files_by_type[ext] = stats.files_by_type.get(ext, 0) + 1
                         stats.total_bytes_recovered += f.size
 
-                if self._stop_event.is_set():
-                    self._cb.on_log("WARN", "Recovery stopped by user.")
-                    return
-
                 # Phase 3: Carving
-                if self._config.strategy in ("carving", "both"):
+                if not self._stop_event.is_set() and self._config.strategy in ("carving", "both"):
                     self._cb.on_log("INFO", "Starting signature-based carving...")
                     self._run_carving(reader, session_dir, stats)
 
-                if self._stop_event.is_set():
-                    self._cb.on_log("WARN", "Recovery stopped by user.")
-                    return
-
                 # Phase 4: Hash manifest
-                if self._config.generate_hashes:
+                if not self._abort_event.is_set() and self._config.generate_hashes:
                     self._cb.on_log("INFO", "Generating hash manifest...")
                     self._generate_hash_manifest(session_dir)
 
                 # Phase 5: Forensic report
-                if self._config.forensic_log:
+                if not self._abort_event.is_set() and self._config.forensic_log:
                     report_path = session_dir / "recovery_report.json"
                     self._write_report(stats, report_path)
                     stats.report_path = str(report_path)
                     self._cb.on_log("INFO", f"Report saved: {report_path}")
+
+                if self._abort_event.is_set():
+                    raise RecoveryAborted("Recovery completely aborted by user.")
+
+                if self._stop_event.is_set():
+                    self._cb.on_log("WARN", "Recovery stopped by user.")
 
             stats.total_files = stats.files_from_filesystem + stats.files_from_carving
             stats.duration_seconds = round(time.monotonic() - start_time, 2)
@@ -272,6 +277,9 @@ class RecoveryEngine:
             )
             self._cb.on_complete(stats)
 
+        except RecoveryAborted as e:
+            self._cb.on_log("WARN", str(e))
+            self._cb.on_error(str(e))
         except Exception as e:
             self._cb.on_error(str(e))
             self._cb.on_log("ERROR", f"Recovery failed: {e}")
@@ -291,6 +299,7 @@ class RecoveryEngine:
             progress_callback=lambda phase, cur, total: self._update_progress(
                 cur, total, f"FS recovery: {phase}"
             ),
+            stop_check=lambda: self._stop_event.is_set(),
         )
 
         result = strategy.recover(self._config.source, method="filesystem")
@@ -325,11 +334,12 @@ class RecoveryEngine:
 
         carve_dir = session_dir / "carved"
 
-        def carve_progress(scanned: int, total: int, files_found: int) -> None:
+        def carve_progress(scanned: int, total: int, files_found: int) -> bool:
             self._wait_if_paused()
             if self._stop_event.is_set():
-                return
+                return False
             self._update_progress(scanned, total, f"Carving... ({files_found} files found)")
+            return True
 
         engine = CarvingEngine(
             registry,

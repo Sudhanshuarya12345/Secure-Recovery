@@ -149,7 +149,11 @@ class DrivePanel(ttk.Frame):
 
         self._stop_btn = ttk.Button(btn_frame, text="■ Stop",
                                      command=self._stop_recovery, state="disabled")
-        self._stop_btn.pack(side="left", padx=(0, 8))
+        self._stop_btn.pack(side="left", padx=(0, 4))
+
+        self._abort_btn = ttk.Button(btn_frame, text="⏹ Abort",
+                                      command=self._abort_recovery, state="disabled")
+        self._abort_btn.pack(side="left", padx=(0, 8))
 
         self._report_btn = ttk.Button(btn_frame, text="📄 Generate Report",
                                        command=self._generate_report, state="disabled")
@@ -347,6 +351,7 @@ class DrivePanel(ttk.Frame):
         # Disable controls
         self._start_btn.config(state="disabled")
         self._stop_btn.config(state="normal")
+        self._abort_btn.config(state="normal")
         self._refresh_btn.config(state="disabled")
         self._progress.reset()
 
@@ -398,7 +403,13 @@ class DrivePanel(ttk.Frame):
         """Stop recovery gracefully."""
         if self._engine:
             self._engine.stop()
-            self._on_log("WARN", "Stop signal sent — waiting for engine to finish...")
+            self._on_log("WARN", "Stop signal sent — gracefully finishing phase...")
+
+    def _abort_recovery(self) -> None:
+        """Abort recovery completely."""
+        if self._engine:
+            self._engine.abort()
+            self._on_log("WARN", "Abort signal sent — cancelling operation immediately...")
 
     def _get_partition_index(self) -> int | None:
         """Get selected partition index, or None for entire disk."""
@@ -442,6 +453,7 @@ class DrivePanel(ttk.Frame):
         """Handle recovery completion."""
         self._start_btn.config(state="normal")
         self._stop_btn.config(state="disabled")
+        self._abort_btn.config(state="disabled")
         self._refresh_btn.config(state="normal")
         self._report_btn.config(state="normal")
 
@@ -463,10 +475,14 @@ class DrivePanel(ttk.Frame):
         """Handle engine error."""
         self._start_btn.config(state="normal")
         self._stop_btn.config(state="disabled")
+        self._abort_btn.config(state="disabled")
         self._refresh_btn.config(state="normal")
 
         self._on_log("ERROR", error)
-        messagebox.showerror("Recovery Error", error)
+        
+        # Don't show error dialog for intentional aborts
+        if "aborted by user" not in error.lower():
+            messagebox.showerror("Recovery Error", error)
 
     def _generate_report(self) -> None:
         """Generate forensic report for the last recovery."""

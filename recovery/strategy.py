@@ -81,6 +81,7 @@ class RecoveryStrategy:
         include_deleted: bool = True,
         enable_carving: bool = True,
         progress_callback: Callable[[str, int, int], None] | None = None,
+        stop_check: Callable[[], bool] | None = None,
     ) -> None:
         """Initialize recovery strategy.
 
@@ -89,11 +90,13 @@ class RecoveryStrategy:
             include_deleted: Recover deleted files from filesystems.
             enable_carving: Enable carving for unallocated regions.
             progress_callback: Called with (phase_name, current, total).
+            stop_check: Called periodically. If returns True, aborts recovery.
         """
         self._output_dir = output_dir
         self._include_deleted = include_deleted
         self._enable_carving = enable_carving
         self._progress_callback = progress_callback
+        self._stop_check = stop_check
 
     def recover(
         self, source: str, method: str = "auto"
@@ -136,6 +139,10 @@ class RecoveryStrategy:
 
             # Phase 2: Filesystem recovery
             if method in ("auto", "filesystem", "all"):
+                if self._stop_check and self._stop_check():
+                    logger.warning("Recovery aborted by user")
+                    return result
+                    
                 fs_files = self._recover_from_filesystems(
                     reader, scan, session_dir
                 )
@@ -212,6 +219,9 @@ class RecoveryStrategy:
         part_dir.mkdir(parents=True, exist_ok=True)
 
         for entry in entries:
+            if self._stop_check and self._stop_check():
+                break
+                
             if entry.is_directory or entry.is_volume_label:
                 continue
             if entry.file_size == 0:
@@ -252,6 +262,9 @@ class RecoveryStrategy:
         part_dir.mkdir(parents=True, exist_ok=True)
 
         for entry in entries:
+            if self._stop_check and self._stop_check():
+                break
+                
             if entry.is_directory:
                 continue
             if entry.file_size == 0:
@@ -295,6 +308,9 @@ class RecoveryStrategy:
         part_dir.mkdir(parents=True, exist_ok=True)
 
         for entry in entries:
+            if self._stop_check and self._stop_check():
+                break
+                
             if entry.is_directory:
                 continue
             if entry.file_size == 0:

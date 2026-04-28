@@ -91,7 +91,7 @@ class CarvingEngine:
         output_dir: str = "./output",
         chunk_size: int = 1_048_576,
         enable_dedup: bool = True,
-        progress_callback: Callable[[int, int, int], None] | None = None,
+        progress_callback: Callable[[int, int, int], bool] | None = None,
     ) -> None:
         """Initialize the carving engine.
 
@@ -156,11 +156,14 @@ class CarvingEngine:
                 result.carved_files.extend(carved)
 
                 if self._progress_callback:
-                    self._progress_callback(
+                    should_continue = self._progress_callback(
                         chunk_reader.bytes_read,
                         total_size,
                         len(result.carved_files),
                     )
+                    if should_continue is False:
+                        logger.warning("Carving aborted by progress callback")
+                        break
 
         finally:
             if own_reader:
