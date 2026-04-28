@@ -1,0 +1,149 @@
+# ----------------------
+# OS GENERATED FILES
+# ----------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.Spotlight-V100/
+.Trashes/
+
+# ----------------------
+# EDITOR / IDE FILES
+# ----------------------
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.code-workspace
+
+# ----------------------
+# LOG FILES
+# ----------------------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ----------------------
+# ENVIRONMENT FILES
+# ----------------------
+.env
+.env.*
+*.local
+
+# ----------------------
+# PYTHON
+# ----------------------
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyc
+*.pyo
+*.so
+*.egg
+*.egg-info/
+*.whl
+pip-wheel-metadata/
+build/
+dist/
+*.manifest
+*.spec
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+.conda/
+pip-log.txt
+
+# ----------------------
+# TEST OUTPUT
+# ----------------------
+coverage/
+.nyc_output/
+tests/
+
+# ----------------------
+# DEPENDENCIES
+# ----------------------
+node_modules/
+vendor/
+bower_components/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ----------------------
+# BUILD OUTPUTS
+# ----------------------
+out/
+target/
+*.exe
+*.dll
+*.dylib
+
+# ----------------------
+# JAVA / KOTLIN
+# ----------------------
+*.class
+*.jar
+*.war
+*.ear
+.gradle/
+
+# ----------------------
+# C / C++
+# ----------------------
+*.o
+*.obj
+*.out
+*.a
+*.lib
+
+# ----------------------
+# GO
+# ----------------------
+bin/
+pkg/
+
+# ----------------------
+# RUST
+# ----------------------
+Cargo.lock
+
+# ----------------------
+# PROJECT OUTPUT
+# ----------------------
+recovered/
+
+# ----------------------
+# CACHE / TEMP
+# ----------------------
+.cache/
+*.cache
+*.tmp
+temp/
+tmp/
+
+# ----------------------
+# MISC
+# ----------------------
+*.bak
+*.swp
+*.swo
+*.orig
