@@ -1,0 +1,11 @@
+# Runtime dependencies
+click>=8.0
+rich>=13.0
+tqdm>=4.0
+Pillow>=10.0
+
+# Development dependencies
+pytest>=7.0
+pytest-cov>=4.0
+mypy>=1.0
+black>=23.0
