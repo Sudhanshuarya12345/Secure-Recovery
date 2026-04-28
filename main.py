@@ -1,14 +1,17 @@
 """
 PyRecovery — Production-grade disk recovery & digital forensics tool.
 
-CLI entry point. Uses Click for subcommand routing with Rich for display.
-Phase 1: Basic disk access commands (test-read, list-devices, create-image).
+Entry points:
+    python main.py          →  Interactive CLI wizard (guided recovery)
+    python main.py --ui     →  Tkinter graphical interface
+    python main.py <cmd>    →  Click subcommands (carve, recover, scan, etc.)
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 # Fix Windows console encoding for Rich Unicode output
 if os.name == "nt":
@@ -762,4 +765,18 @@ def preview_cmd(source: str, offset: int, length: int, mode: str) -> None:
 
 
 if __name__ == "__main__":
-    cli()
+    # Route to the appropriate interface based on arguments
+    if "--ui" in sys.argv:
+        # Launch Tkinter GUI
+        sys.argv.remove("--ui")
+        from ui.app import PyRecoveryApp
+        app = PyRecoveryApp()
+        app.mainloop()
+    elif len(sys.argv) == 1:
+        # No arguments → launch interactive wizard
+        from cli.wizard import RecoveryWizard
+        wizard = RecoveryWizard()
+        wizard.run()
+    else:
+        # Subcommand provided → use existing Click CLI
+        cli()
