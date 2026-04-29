@@ -175,6 +175,20 @@ class NTFSParser:
         )
         return entries
 
+    def build_tree(self, include_deleted: bool = True) -> "DirectoryNode | None":
+        """Reconstruct the entire directory tree, including deleted entries.
+        
+        Returns:
+            Root DirectoryNode containing the nested tree, or None if failed.
+        """
+        if not self._initialized:
+            if not self.initialize():
+                return None
+                
+        from filesystem.ntfs.tree_builder import NTFSTreeBuilder
+        builder = NTFSTreeBuilder(self)
+        return builder.build(include_deleted=include_deleted)
+
     def read_file(self, entry: NTFSFileEntry) -> bytes:
         """Read file data from data runs or resident data.
 

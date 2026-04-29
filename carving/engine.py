@@ -212,51 +212,57 @@ class CarvingEngine:
         """
         results: list[CarvedFile] = []
         chunk_len = len(chunk)
-        offset_sigs = self._registry.get_offset_signatures()
+        candidates: list[tuple[int, int, int, BaseSignature]] = []
 
-        pos = 0
-        while pos < chunk_len:
-            abs_offset = base_offset + pos
+        # Assign priority: lower number = processed first
+        # Signatures with footers or parseable size fields are more precise
+        # and should claim disk ranges before greedy max_size fallbacks
+        def _sig_priority(sig: BaseSignature) -> int:
+            if sig.footer is not None:
+                return 0  # Footer-based (JPEG, PDF, etc.) — most reliable
+            # Heuristic: if get_size usually returns a value, it's better
+            if sig.category in ("images", "documents", "media"):
+                return 1  # Typically have structured sizes
+            return 2  # System/archive sigs that often fall back to max_size
 
-            # Skip if this position is inside an already-extracted file
-            if self._overlaps_existing(abs_offset, abs_offset + 1):
-                pos += 1
-                continue
-
-            # O(1) lookup by first byte
-            first_byte = chunk[pos]
-            candidates = self._registry.get_by_first_byte(first_byte)
-
-            # Also check offset-based signatures periodically
-            # (check every 4 bytes for offset signatures — they're rare)
-            if pos % 4 == 0 and offset_sigs:
-                for osig in offset_sigs:
-                    if pos >= osig.header_offset:
-                        check_pos = pos - osig.header_offset
-                        abs_check = base_offset + check_pos
-                        if not self._overlaps_existing(abs_check, abs_check + 1):
-                            if osig.match_header(chunk, check_pos):
-                                carved = self._handle_match(
-                                    osig, abs_check, reader, session_dir
-                                )
-                                if carved:
-                                    results.append(carved)
-
-            for sig in candidates:
-                if not sig.match_header(chunk, pos):
+        # Find all signature candidates at C-speed using bytes.find()
+        for sig in self._registry.get_all():
+            priority = _sig_priority(sig)
+            for header in sig.headers:
+                if not header:
                     continue
+                pos = 0
+                while True:
+                    pos = chunk.find(header, pos)
+                    if pos == -1:
+                        break
+                    
+                    # Calculate the actual start of the file based on header_offset
+                    check_pos = pos - sig.header_offset
+                    # Only keep candidates that start inside this chunk's boundaries
+                    if 0 <= check_pos < chunk_len:
+                        abs_offset = base_offset + check_pos
+                        candidates.append((priority, abs_offset, check_pos, sig))
+                    
+                    # Move past this match to find the next one
+                    pos += 1
 
-                carved = self._handle_match(sig, abs_offset, reader, session_dir)
-                if carved:
-                    results.append(carved)
-                    # Jump past this file
-                    pos = (abs_offset + carved.size) - base_offset
-                    break
-            else:
-                pos += 1
+        # Sort: first by priority (footer sigs first), then by disk offset
+        candidates.sort(key=lambda x: (x[0], x[1]))
+
+        for _prio, abs_offset, check_pos, sig in candidates:
+            # Skip if this offset is inside an already-extracted file
+            if self._overlaps_existing(abs_offset, abs_offset + 1):
                 continue
-            # If we broke out of the for loop (found a match), continue outer loop
-            continue
+
+            # Validate the full header logic (e.g. dynamic sizing, constraints)
+            if not sig.match_header(chunk, check_pos):
+                continue
+
+            # Extract, deduplicate, and write
+            carved = self._handle_match(sig, abs_offset, reader, session_dir)
+            if carved:
+                results.append(carved)
 
         return results
 
@@ -287,7 +293,7 @@ class CarvingEngine:
         if data is None or len(data) < sig.min_size:
             return None
 
-        # Deduplication check
+        # Deduplication check (use first 64KB for fast prefix hash)
         if self._dedup:
             is_dup, sha256 = self._dedup.check_and_mark(data)
             if is_dup:
@@ -295,7 +301,7 @@ class CarvingEngine:
                 return None
         else:
             import hashlib
-            sha256 = hashlib.sha256(data).hexdigest()
+            sha256 = hashlib.sha256(data[:65536]).hexdigest()
 
         # Validate
         is_valid, reason = self._validator.validate(data, sig)
@@ -303,12 +309,17 @@ class CarvingEngine:
             logger.debug(
                 "Rejected %s at offset %d: %s", sig.name, abs_offset, reason
             )
+            # For invalid files: only block the header area (min_size),
+            # NOT the full 50MB extraction. This prevents false positive
+            # EXE/BMP from swallowing real JPEG/PNG files behind them.
+            block_size = min(sig.min_size, len(data))
+            insort(self._extracted, (abs_offset, abs_offset + block_size))
+        else:
+            # Record extracted interval for valid files (full range)
+            end_offset = abs_offset + len(data)
+            insort(self._extracted, (abs_offset, end_offset))
 
-        # Record extracted interval
-        end_offset = abs_offset + len(data)
-        insort(self._extracted, (abs_offset, end_offset))
-
-        # Write output
+        # Write output (valid goes to category, invalid goes to partial/)
         output_path = self._write_output(data, sig, abs_offset, session_dir, is_valid)
 
         return CarvedFile(
@@ -368,6 +379,18 @@ class CarvingEngine:
                 return data, "footer_scan"
 
         # Strategy 3: Extract max_size bytes (last resort)
+        # Early validation: check the header chunk first before reading 50MB
+        # This avoids massive I/O for false positive BMP/EXE matches
+        try:
+            if not sig.validate(header_data):
+                return None, ""
+        except Exception:
+            pass
+
+        # Also check null-byte ratio on the header chunk
+        if header_data.count(0) / len(header_data) > 0.95:
+            return None, ""
+
         actual_size = min(sig.max_size, initial_read)
         data = reader.read_at(offset, actual_size)
         return data, "max_size"
@@ -404,6 +427,10 @@ class CarvingEngine:
             idx = data.find(footer)
             if idx >= 0:
                 return pos + idx
+
+            # If we didn't read enough data to advance, we hit EOF
+            if len(data) <= len(footer):
+                break
 
             # Advance, but overlap by footer length to catch split footers
             pos += len(data) - len(footer)

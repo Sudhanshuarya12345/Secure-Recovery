@@ -158,6 +158,21 @@ class FAT32Parser:
         )
         return results
 
+    def build_tree(self) -> "DirectoryNode | None":
+        """Reconstruct the entire directory tree, including deleted entries.
+        
+        Returns:
+            Root DirectoryNode containing the nested tree, or None if failed.
+        """
+        if not self._initialized:
+            if not self.initialize():
+                return None
+                
+        assert self._bpb is not None
+        from filesystem.fat32.tree_builder import FATTreeBuilder
+        builder = FATTreeBuilder(self._reader, self._bpb, self._fat, self._part_start)
+        return builder.build()
+
     def read_file(self, entry: FATDirectoryEntry) -> bytes:
         """Read file data by following its cluster chain.
 
