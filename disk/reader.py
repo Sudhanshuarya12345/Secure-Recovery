@@ -23,6 +23,7 @@ import mmap
 import os
 import stat
 from pathlib import Path
+import typing
 from typing import Optional
 
 from disk.bad_sector_map import BadSectorMap
@@ -31,10 +32,10 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Maximum file size for mmap acceleration (2 GB)
+# Maximum file size for mmap acceleration (32 GB)
 # Beyond this, mmap on 32-bit systems can fail, and even on 64-bit
-# the kernel page table overhead becomes significant
-_MMAP_THRESHOLD = 2 * 1024 * 1024 * 1024
+# the kernel page table overhead becomes significant for >32GB files.
+_MMAP_THRESHOLD = 32 * 1024 * 1024 * 1024
 
 
 class DiskReader:
@@ -54,6 +55,8 @@ class DiskReader:
             raw = reader.read_at(0x1000, 256)
             print(f"Disk size: {reader.get_disk_size()} bytes")
     """
+
+    CHUNK_SIZE = 4 * 1024 * 1024  # 4MB chunks for chunked scanning
 
     def __init__(self, source: str, sector_size: int = 512) -> None:
         """Open a source in read-only binary mode with forensic protections.
@@ -413,6 +416,49 @@ class DiskReader:
         if len(result) < size:
             result = result + b"\x00" * (size - len(result))
         return result
+
+    def find(self, pattern: bytes, start: int = 0, end: int = -1) -> int:
+        """Search for a byte pattern at C speed.
+        
+        Args:
+            pattern: The bytes to search for.
+            start: The offset to start searching from.
+            end: The offset to stop searching.
+            
+        Returns:
+            The offset where the pattern was found, or -1 if not found.
+        """
+        if self._mmap:
+            return self._mmap.find(pattern, start, end if end != -1 else self._size)
+            
+        # Fallback for physical devices / huge files that aren't memory-mapped
+        # This is a naive implementation; callers should prefer iter_chunks() for large scans
+        # to avoid overlapping bugs. This method is provided for compatibility.
+        actual_end = end if end != -1 else self._size
+        for chunk_offset, chunk_data in self.iter_chunks(start, actual_end):
+            pos = chunk_data.find(pattern)
+            if pos != -1:
+                return chunk_offset + pos
+        return -1
+
+    def iter_chunks(self, start: int = 0, end: int | None = None) -> typing.Iterator[tuple[int, bytes]]:
+        """Yield (offset, data) tuples covering the disk with a 1MB overlap.
+        
+        This allows safe chunked scanning where files crossing a chunk boundary
+        will still be detected in the overlap region.
+        """
+        if end is None:
+            end = self._size
+        
+        # 1MB overlap to ensure we don't miss cross-boundary headers
+        overlap = 1024 * 1024
+        offset = start
+        
+        while offset < end:
+            read_size = min(self.CHUNK_SIZE + overlap, end - offset)
+            data = self.read_at(offset, read_size)
+            yield offset, data
+            offset += self.CHUNK_SIZE
 
     def get_disk_size(self) -> int:
         """Return total source size in bytes.

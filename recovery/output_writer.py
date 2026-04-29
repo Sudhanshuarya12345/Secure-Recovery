@@ -63,11 +63,65 @@ class OutputWriter:
         "sqlite": "system", "log": "system",
     }
 
-    def __init__(self, output_dir: str) -> None:
+    def __init__(self, output_dir: str, mode: str = "by_type") -> None:
         self._output_dir = Path(output_dir)
+        self.mode = mode
         self._entries: list[OutputEntry] = []
         self._name_counter: dict[str, int] = {}
-        self._setup_dirs()
+        if self.mode in ("by_type", "both"):
+            self._setup_dirs()
+        if self.mode in ("tree", "both"):
+            (self._output_dir / "tree").mkdir(parents=True, exist_ok=True)
+
+    def write_with_tree(self, entry, data: bytes) -> OutputEntry | None:
+        """Preserves original path for filesystem recovery."""
+        if self.mode == "by_type":
+            return None
+
+        # Sanitize path components
+        safe_path = self._sanitize_path(entry.full_path)
+        dest = self._output_dir / "tree" / safe_path.lstrip("/")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        if entry.is_deleted:
+            stem = dest.stem
+            suffix = dest.suffix
+            dest = dest.with_name(f"{stem}_[DELETED]{suffix}")
+
+        dest.write_bytes(data)
+
+        meta = {
+            "original_path": entry.full_path,
+            "is_deleted": entry.is_deleted,
+            "size": entry.size,
+            "created_at": entry.created_at.isoformat() if entry.created_at else None,
+            "modified_at": entry.modified_at.isoformat() if entry.modified_at else None,
+        }
+        with open(str(dest) + ".meta.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+        sha256 = hashlib.sha256(data).hexdigest()
+        out_entry = OutputEntry(
+            original_name=entry.name,
+            output_path=str(dest),
+            category="tree",
+            size=len(data),
+            sha256=sha256,
+            source="filesystem",
+            is_deleted=entry.is_deleted
+        )
+        self._entries.append(out_entry)
+        logger.debug("Wrote tree file %s -> %s", entry.full_path, dest)
+        return out_entry
+
+    def _sanitize_path(self, path: str) -> str:
+        """Ensure no traversal or invalid characters in path."""
+        parts = [p for p in path.split("/") if p and p not in (".", "..")]
+        safe_parts = []
+        for p in parts:
+            safe = "".join(c if c.isalnum() or c in ".-_ " else "_" for c in p)
+            safe_parts.append(safe)
+        return "/".join(safe_parts)
 
     def write_file(self, name: str, data: bytes, category: str = "",
                    source: str = "filesystem", is_deleted: bool = False) -> OutputEntry:
@@ -110,6 +164,36 @@ class OutputWriter:
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         return manifest_path
+
+    def write_file_tree_json(self, root_node, filesystem_type: str = "Unknown") -> str:
+        """Write the hierarchical directory structure to file_tree.json."""
+        def node_to_dict(node):
+            d = {
+                "name": node.name,
+                "type": "directory" if node.is_directory else "file",
+                "deleted": node.deleted
+            }
+            if not node.is_directory and getattr(node, 'entry', None):
+                d["size"] = node.entry.size
+                if getattr(node.entry, 'created_at', None):
+                    d["created_at"] = node.entry.created_at.isoformat()
+                if getattr(node.entry, 'modified_at', None):
+                    d["modified_at"] = node.entry.modified_at.isoformat()
+            
+            if node.is_directory and node.children:
+                d["children"] = [node_to_dict(child) for child in node.children]
+            return d
+
+        data = {
+            "filesystem": filesystem_type,
+            "scan_time": datetime.now(timezone.utc).isoformat(),
+            "tree": node_to_dict(root_node)
+        }
+        
+        tree_path = str(self._output_dir / "file_tree.json")
+        with open(tree_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return tree_path
 
     @property
     def entry_count(self) -> int:
